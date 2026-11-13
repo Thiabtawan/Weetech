@@ -2,6 +2,7 @@ from collections import deque
 import configparser
 import subprocess
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
@@ -31,6 +32,10 @@ def load_settings():
 
     def gi(sec, key, default):
         return cfg.getint(sec, key, fallback=default)
+
+    mode = gi("APP", "mode", 2)
+    if mode not in (1, 2):
+        mode = 2
 
     return {
         "ini_file": Path(gs("APP", "ini_file", r"C:\IniFiles\usbpio.ini")),
@@ -87,6 +92,14 @@ def load_settings():
         # ค้าง PASS/FAIL ไว้ จนกว่า TSL จะเริ่มเทสใหม่ (Pin TESTING = True)
         "latch_result": cfg.getboolean(
             "APP", "latch_result", fallback=True
+        ),
+
+        # โหมด 1 = ใช้ Pin5 เป็น Interlock / โหมด 2 = ไม่สน Pin5 (ส่งผลตามเวลา)
+        "mode": mode,
+
+        # โหมด 2: ส่ง PASS/FAIL ค้างไว้กี่วินาที แล้วหยุดส่ง
+        "result_hold_s": max(
+            0.1, cfg.getfloat("APP", "result_hold_sec", fallback=5.0)
         ),
     }
 
@@ -154,6 +167,8 @@ class App(tk.Tk):
 
         # Debounce / Latch
         self.off_counts = {}
+        self.dismissed = {"pass": False, "fail": False}
+        self.result_since = {"pass": None, "fail": None}
 
         # Animation state
         self.blink_on = True
@@ -697,19 +712,38 @@ class App(tk.Tk):
         }
 
     # =====================================================
-    # DEBOUNCE + LATCH
+    # DEBOUNCE + LATCH + MODE
     # =====================================================
 
-    def stabilize(self, raw):
+    def stabilize(self, raw_in):
 
+        s = self.s
+        mode1 = s["mode"] == 1
+        need = s["off_confirm_polls"]
+
+        raw = dict(raw_in)
         prev = self.pin_state
 
-        # ครั้งแรก / เพิ่งกลับมา Online: ใช้ค่าที่อ่านได้เลย
+        # ครั้งแรก / เพิ่งกลับมา Online
         if prev is None:
+            prev = {k: False for k in raw}
             self.off_counts = {k: 0 for k in raw}
-            return dict(raw)
 
-        need = self.s["off_confirm_polls"]
+        # MODE 1: ผลเก่าที่ถูกยกเลิกไปแล้ว (Pin5 หลุด)
+        # ห้ามกลับมาโชว์ซ้ำ จนกว่าไฟล์จะเคลียร์ หรือเริ่มเทสใหม่
+        if mode1:
+
+            if raw["testing"]:
+                self.dismissed = {"pass": False, "fail": False}
+
+            for k in ("pass", "fail"):
+                if self.dismissed[k]:
+                    if raw[k]:
+                        raw[k] = False
+                    else:
+                        self.dismissed[k] = False
+
+        # Debounce: ดับเมื่ออ่านได้ False ติดกันครบ need รอบเท่านั้น
         out = {}
 
         for k, v in raw.items():
@@ -719,12 +753,11 @@ class App(tk.Tk):
                 out[k] = True
 
             else:
-                # ดับเมื่ออ่านได้ False ติดกันครบ need รอบเท่านั้น
                 self.off_counts[k] = self.off_counts.get(k, 0) + 1
                 out[k] = prev[k] and self.off_counts[k] < need
 
-        # ค้าง PASS / FAIL ไว้ จนกว่าจะเริ่มเทสใหม่ (TESTING = True)
-        if self.s["latch_result"] and not raw["testing"]:
+        # Latch: ค้าง PASS / FAIL ไว้ จนกว่าจะเริ่มเทสใหม่ (TESTING = True)
+        if s["latch_result"] and not raw["testing"]:
 
             for k, other in (("fail", "pass"), ("pass", "fail")):
 
@@ -733,13 +766,54 @@ class App(tk.Tk):
 
         # TESTING กับ PASS/FAIL ต้องไม่ติดพร้อมกัน
         if not raw["testing"] and (out["fail"] or out["pass"]):
-            # เทสจบแล้ว: ดับ TESTING ทันที แล้วโชว์ผล PASS/FAIL
             out["testing"] = False
 
         elif out["testing"]:
-            # กำลังเทสอยู่: ซ่อนผลเก่าที่ยังค้างในไฟล์ไว้ก่อน
             out["fail"] = False
             out["pass"] = False
+
+        # MODE 1: Interlock ด้วย Pin5 (READY)
+        # Pin5 = False -> ยกเลิก / รีเซ็ตทุกอย่าง
+        if mode1 and not out["ready"]:
+
+            out["testing"] = False
+            out["fail"] = False
+            out["pass"] = False
+
+            for k in ("pass", "fail"):
+                if raw_in[k]:
+                    self.dismissed[k] = True
+
+        return out
+
+    # =====================================================
+    # OUTPUT STATE (สิ่งที่ส่งไป USB-PIO)
+    # =====================================================
+
+    def output_state(self, disp):
+
+        out = dict(disp)
+
+        # MODE 1: ส่งตามที่แสดงทุกอย่าง (ค้างไว้)
+        if self.s["mode"] != 2:
+            return out
+
+        # MODE 2: ส่ง PASS / FAIL ตามเวลาที่ตั้งไว้ แล้วหยุดส่ง
+        # (หน้าจอยังแสดงผลค้างอยู่)
+        now = time.monotonic()
+        hold = self.s["result_hold_s"]
+
+        for k in ("pass", "fail"):
+
+            if disp[k]:
+
+                if self.result_since[k] is None:
+                    self.result_since[k] = now
+
+                out[k] = (now - self.result_since[k]) < hold
+
+            else:
+                self.result_since[k] = None
 
         return out
 
@@ -765,7 +839,7 @@ class App(tk.Tk):
             self.pin_state = st
 
             # อ่านค่า INI แล้วสั่ง USB-PIO
-            self.sync_usbpio(st)
+            self.sync_usbpio(self.output_state(st))
 
         else:
 
