@@ -141,7 +141,7 @@ class App(tk.Tk):
 
         self.s = s
 
-        self.title("GPIO Monitor")
+        self.title(f'GPIO Monitor - Mode {s["mode"]}')
         self.geometry(f'{s["width"]}x{s["height"]}')
         self.resizable(False, False)
         self.configure(bg=s["background"])
@@ -361,11 +361,96 @@ class App(tk.Tk):
     # BUILD MINI UI
     # =====================================================
 
+    def make_lamp(self, cx, cy, r, color, base):
+        """สร้างหลอดไฟ 1 ดวง: ฮาโล 2 ชั้น + ขอบ + แก้วหลอด + ประกายสะท้อน"""
+
+        cv = self.cv
+        s = self.s
+
+        halo2 = cv.create_oval(
+            cx - r - 10, cy - r - 10, cx + r + 10, cy + r + 10,
+            fill=base, outline=""
+        )
+
+        halo1 = cv.create_oval(
+            cx - r - 6, cy - r - 6, cx + r + 6, cy + r + 6,
+            fill=base, outline=""
+        )
+
+        bezel = cv.create_oval(
+            cx - r - 3, cy - r - 3, cx + r + 3, cy + r + 3,
+            fill=blend(s["off"], base, 0.6),
+            outline=blend(s["muted"], base, 0.35)
+        )
+
+        dot = cv.create_oval(
+            cx - r, cy - r, cx + r, cy + r,
+            fill=s["off"], outline=""
+        )
+
+        hl = cv.create_oval(
+            cx - 0.58 * r, cy - 0.72 * r,
+            cx + 0.08 * r, cy - 0.30 * r,
+            fill=s["off"], outline=""
+        )
+
+        lamp = {
+            "color": color,
+            "base": base,
+            "halo2": halo2,
+            "halo1": halo1,
+            "bezel": bezel,
+            "dot": dot,
+            "hl": hl,
+        }
+
+        self.paint_lamp(lamp, False)
+
+        return lamp
+
+    def paint_lamp(self, lamp, on):
+
+        cv = self.cv
+        s = self.s
+
+        color = lamp["color"]
+        base = lamp["base"]
+
+        unlit = blend(color, s["off"], 0.20)
+
+        cv.itemconfig(
+            lamp["halo2"],
+            fill=blend(color, base, 0.12) if on else base
+        )
+
+        cv.itemconfig(
+            lamp["halo1"],
+            fill=blend(color, base, 0.28) if on else base
+        )
+
+        cv.itemconfig(
+            lamp["bezel"],
+            outline=blend(color, base, 0.55) if on
+            else blend(s["muted"], base, 0.35)
+        )
+
+        cv.itemconfig(
+            lamp["dot"],
+            fill=color if on else unlit
+        )
+
+        cv.itemconfig(
+            lamp["hl"],
+            fill=blend("#FFFFFF", color if on else unlit, 0.55)
+        )
+
     def build(self):
 
         s = self.s
         W, H = s["width"], s["height"]
         bg = s["background"]
+        surface = s["surface"]
+        border = blend(s["off"], surface, 0.5)
 
         cv = tk.Canvas(
             self,
@@ -380,52 +465,81 @@ class App(tk.Tk):
 
         mx = 12
 
-        # Header
-        cv.create_text(
-            mx, 18,
+        # ---------------------------------------------
+        # มุมบนขวา: หลอด READY (Pin5) ไม่มีข้อความ
+        # ---------------------------------------------
+
+        rcx, rcy, rr = W - mx - 12, 19, 6
+
+        self.ready_lamp = self.make_lamp(
+            rcx, rcy, rr, s["ready"], bg
+        )
+
+        # ---------------------------------------------
+        # ตรงกลางด้านบน: ชื่อโปรแกรม
+        # (ตอนหลุดการเชื่อมต่อ จะถูกแทนที่ด้วยป้าย OFFLINE สีแดง)
+        # ---------------------------------------------
+
+        self.title_txt = cv.create_text(
+            W / 2, 19,
             text="GPIO MONITOR",
-            anchor="w",
             font=("Segoe UI", 10, "bold"),
             fill=s["text"]
         )
 
-        # Status badge
         self.badge_bg = rrect(
             cv,
-            W - mx - 83, 8,
-            W - mx, 29,
+            W / 2 - 42, 8,
+            W / 2 + 42, 29,
             9,
             fill=bg,
             outline=""
         )
 
         self.badge_txt = cv.create_text(
-            W - mx - 41,
-            18,
+            W / 2, 18,
             text="",
             font=("Segoe UI", 8, "bold"),
             fill=s["muted"]
         )
 
-        # Main status
-        self.state_txt = cv.create_text(
-            W / 2,
-            60,
-            text="WAIT...",
-            fill=s["muted"],
-            font=("Segoe UI", 25, "bold")
+        # ---------------------------------------------
+        # แผงหลอด 3 ดวง: TEST / PASS / FAIL
+        # ---------------------------------------------
+
+        pt, pb = 40, H - 8
+        ph = pb - pt
+
+        rrect(
+            cv,
+            mx + 1, pt + 2,
+            W - mx + 1, pb + 2,
+            10,
+            fill=blend(s["text"], bg, 0.06),
+            outline=""
         )
 
-        # Status cards
-        gap = 7
-        top = 88
-        card_h = 34
+        rrect(
+            cv,
+            mx, pt,
+            W - mx, pb,
+            10,
+            fill=surface,
+            outline=border
+        )
 
-        cw = (W - 2 * mx - 2 * gap) / 3
+        cw = (W - 2 * mx) / 3
 
-        border = blend(s["off"], s["surface"], 0.5)
+        r = max(10, min(
+            int(cw / 2 - 12),
+            int((ph - 24) / 2 - 10)
+        ))
+
+        cy = pt + (ph - 24) / 2 + 3
+        label_y = pb - 13
 
         self.lamps = {}
+        self.labels = {}
 
         for i, (key, title) in enumerate((
             ("testing", "TEST"),
@@ -433,75 +547,49 @@ class App(tk.Tk):
             ("fail", "FAIL")
         )):
 
-            x1 = mx + i * (cw + gap)
-            x2 = x1 + cw
-            cx = (x1 + x2) / 2
+            cx = mx + cw * (i + 0.5)
 
-            # Card shadow
-            rrect(
-                cv,
-                x1 + 1, top + 2,
-                x2 + 1, top + card_h + 2,
-                7,
-                fill=blend(s["text"], bg, 0.06),
-                outline=""
+            self.lamps[key] = self.make_lamp(
+                cx, cy, r, s[key], surface
             )
 
-            # Card
-            rrect(
-                cv,
-                x1, top,
-                x2, top + card_h,
-                7,
-                fill=s["surface"],
-                outline=border
-            )
-
-            # LED
-            dot = cv.create_oval(
-                cx - 25, top + 12,
-                cx - 15, top + 22,
-                fill=s["off"],
-                outline=""
-            )
-
-            # Label
-            name = cv.create_text(
-                cx - 9,
-                top + 17,
+            self.labels[key] = cv.create_text(
+                cx, label_y,
                 text=title,
-                anchor="w",
                 fill=s["muted"],
                 font=("Segoe UI", 9, "bold")
             )
 
-            self.lamps[key] = (None, dot, name, s[key])
-
     # =====================================================
-    # LED CONTROL
+    # LAMP CONTROL
     # =====================================================
 
     def set_lamp(self, key, on):
 
-        glow, dot, name, color = self.lamps[key]
-        s = self.s
+        self.paint_lamp(self.lamps[key], on)
 
         self.cv.itemconfig(
-            dot,
-            fill=color if on else s["off"]
+            self.labels[key],
+            fill=self.s["text"] if on else self.s["muted"]
         )
 
-        if glow:
-            self.cv.itemconfig(
-                glow,
-                fill=blend(color, s["surface"], 0.28)
-                if on else s["surface"]
-            )
+    def set_ready(self, on):
 
+        self.paint_lamp(self.ready_lamp, on)
+
+    def set_badge(self, text, fg, fill):
+
+        self.cv.itemconfig(self.title_txt, state="hidden")
+        self.cv.itemconfig(self.badge_bg, fill=fill, state="normal")
         self.cv.itemconfig(
-            name,
-            fill=s["text"] if on else s["muted"]
+            self.badge_txt, text=text, fill=fg, state="normal"
         )
+
+    def hide_badge(self):
+
+        self.cv.itemconfig(self.badge_bg, state="hidden")
+        self.cv.itemconfig(self.badge_txt, state="hidden")
+        self.cv.itemconfig(self.title_txt, state="normal")
 
     # =====================================================
     # RENDER STATUS
@@ -510,88 +598,41 @@ class App(tk.Tk):
     def render(self):
 
         s = self.s
-        cv = self.cv
         bg = s["background"]
 
         # ---------------- CONNECTING ----------------
         if self.online is None:
 
-            cv.itemconfig(
-                self.badge_bg,
-                fill=blend(s["muted"], bg, 0.15)
-            )
-            cv.itemconfig(
-                self.badge_txt,
-                text="● ...",
-                fill=s["muted"]
-            )
-            cv.itemconfig(
-                self.state_txt,
-                text="WAIT...",
-                fill=s["muted"],
-                font=("Segoe UI", 23, "bold")
-            )
+            self.hide_badge()
 
             for k in self.lamps:
                 self.set_lamp(k, False)
 
+            self.set_ready(False)
             return
 
         # ---------------- OFFLINE ----------------
         if self.online is False:
 
-            cv.itemconfig(
-                self.badge_bg,
-                fill=blend(s["fail"], bg, 0.14)
-            )
-            cv.itemconfig(
-                self.badge_txt,
-                text="● OFFLINE",
-                fill=s["fail"]
-            )
-            cv.itemconfig(
-                self.state_txt,
-                text="OFFLINE",
-                fill=s["fail"],
-                font=("Segoe UI", 25, "bold")
+            self.set_badge(
+                "● OFFLINE", s["fail"],
+                blend(s["fail"], bg, 0.14)
             )
 
             for k in self.lamps:
                 self.set_lamp(k, False)
 
+            self.set_ready(False)
             return
 
         # ---------------- ONLINE ----------------
         st = self.pin_state
 
-        if st["fail"]:
-            text = "FAIL"
-            color = s["fail"]
+        self.hide_badge()
 
-        elif st["pass"]:
-            text = "PASS"
-            color = s["pass"]
-
-        elif st["testing"]:
-            text = "TESTING"
-            color = s["testing"]
-
-        else:
-            text = "IDLE"
-            color = s["muted"]
-
-        cv.itemconfig(
-            self.state_txt,
-            text=text,
-            fill=color,
-            font=("Segoe UI", 25, "bold")
-        )
-
-        # TESTING blinking
         self.set_lamp("testing", st["testing"] and self.blink_on)
-
-        # FAIL LED
         self.set_lamp("fail", st["fail"])
+        self.set_ready(st["ready"])
 
         # ---------------- RECOVERY ANIMATION ----------------
         if self.recovering:
@@ -600,45 +641,9 @@ class App(tk.Tk):
 
             self.set_lamp("pass", flash)
 
-            cv.itemconfig(
-                self.badge_bg,
-                fill=s["pass"] if flash
-                else blend(s["pass"], bg, 0.14)
-            )
-            cv.itemconfig(
-                self.badge_txt,
-                text="● LIVE",
-                fill="#FFFFFF" if flash else s["pass"]
-            )
-
         else:
 
             self.set_lamp("pass", st["pass"])
-
-            # READY / STANDBY
-            if st["ready"]:
-
-                cv.itemconfig(
-                    self.badge_bg,
-                    fill=blend(s["ready"], bg, 0.15)
-                )
-                cv.itemconfig(
-                    self.badge_txt,
-                    text="● READY",
-                    fill=s["ready"]
-                )
-
-            else:
-
-                cv.itemconfig(
-                    self.badge_bg,
-                    fill=blend(s["muted"], bg, 0.15)
-                )
-                cv.itemconfig(
-                    self.badge_txt,
-                    text="● STANDBY",
-                    fill=s["muted"]
-                )
 
     # =====================================================
     # READ USB-PIO INI
