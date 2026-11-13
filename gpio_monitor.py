@@ -731,6 +731,16 @@ class App(tk.Tk):
                 if prev[k] and not raw[other]:
                     out[k] = True
 
+        # TESTING กับ PASS/FAIL ต้องไม่ติดพร้อมกัน
+        if not raw["testing"] and (out["fail"] or out["pass"]):
+            # เทสจบแล้ว: ดับ TESTING ทันที แล้วโชว์ผล PASS/FAIL
+            out["testing"] = False
+
+        elif out["testing"]:
+            # กำลังเทสอยู่: ซ่อนผลเก่าที่ยังค้างในไฟล์ไว้ก่อน
+            out["fail"] = False
+            out["pass"] = False
+
         return out
 
     # =====================================================
